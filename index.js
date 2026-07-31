@@ -98,27 +98,70 @@ async function fetchBaidu(query, max) {
   return results;
 }
 
+// ========== 修复 fetchBing（多重选择器降级） ==========
 async function fetchBing(query, max) {
   const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
   const response = await axios.get(url, {
-    headers: { 'User-Agent': getNextUA(), 'Accept-Language': 'zh-CN,zh;q=0.9' },
+    headers: {
+      'User-Agent': getNextUA(),
+      'Accept-Language': 'zh-CN,zh;q=0.9',
+    },
     timeout: CONFIG.requestTimeout,
+    maxRedirects: 5,
   });
+
   const $ = cheerio.load(response.data);
   const results = [];
-  $('#b_results .b_algo').each((i, elem) => {
-    if (i >= max) return false;
-    const titleElem = $(elem).find('h2 a');
-    const title = titleElem.text().trim();
+  let items = [];
+
+  // 尝试多种选择器，适应国内外不同版本
+  const standard = $('#b_results .b_algo');
+  if (standard.length > 0) {
+    items = standard.toArray();
+  } else {
+    const fallback = $('.b_algo, .b_slidebar');
+    if (fallback.length > 0) {
+      items = fallback.toArray();
+    } else {
+      // 通用降级：查找 h2/h3 内的链接，取最近的块级父容器
+      const linkParents = new Set();
+      $('h2 a, h3 a').each((_, el) => {
+        const parent = $(el).closest('li, div, section');
+        if (parent.length) {
+          linkParents.add(parent[0]);
+        }
+      });
+      items = Array.from(linkParents);
+    }
+  }
+
+  let count = 0;
+  for (const elem of items) {
+    if (count >= max) break;
+    const $elem = $(elem);
+
+    const titleElem = $elem.find('h2 a, h3 a').first();
+    let title = titleElem.text().trim();
     let link = titleElem.attr('href');
-    if (!title || !link) return;
+    if (!title || !link) continue;
+
+    // 处理重定向链接
     if (link.startsWith('/url?q=')) {
       const qs = new URLSearchParams(link.split('?')[1]);
       link = qs.get('q') || link;
+    } else if (link && !link.startsWith('http')) {
+      link = 'https://www.bing.com' + link;
     }
-    const snippet = $(elem).find('.b_caption p').text().trim();
+
+    // 摘要提取
+    let snippet = $elem.find('.b_caption p, .b_snippet, .b_snippetText, .snippet').text().trim();
+    if (!snippet) {
+      snippet = $elem.find('p').first().text().trim();
+    }
+
     results.push({ title, link, snippet, source: 'bing' });
-  });
+    count++;
+  }
   return results;
 }
 
@@ -197,15 +240,48 @@ async function fetchWithPuppeteer(url) {
     await page.setUserAgent(getNextUA());
     await page.goto(url, { waitUntil: 'networkidle2', timeout: CONFIG.fetchTimeout });
     const content = await page.evaluate(() => {
-      const article = document.querySelector('article, main, .content, #content, .post-content');
-      return article ? article.innerText : document.body.innerText;
+      // 移除干扰元素
+      const removeTags = ['script', 'style', 'noscript', 'iframe', 'nav', 'header', 'footer', 'aside'];
+      removeTags.forEach(tag => {
+        document.querySelectorAll(tag).forEach(el => el.remove());
+      });
+
+      // 尝试提取文章主体
+      const article = document.querySelector('article, main, .content, #content, .post-content, .article-content');
+      if (article) {
+        return article.textContent.trim();
+      }
+
+      // 否则获取 body 文本，但过滤短文本和隐藏元素
+      const body = document.body;
+      if (!body) return '';
+      const texts = [];
+      const walker = document.createTreeWalker(
+        body,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode: (node) => {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+            const style = window.getComputedStyle(parent);
+            if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            const text = node.textContent.trim();
+            if (text.length > 20) return NodeFilter.FILTER_ACCEPT;
+            return NodeFilter.FILTER_REJECT;
+          }
+        }
+      );
+      let node;
+      while ((node = walker.nextNode())) {
+        texts.push(node.textContent.trim());
+      }
+      return texts.join('\n').slice(0, 5000);
     });
-    await browser.close();
     return content || '';
   } catch (err) {
-    if (browser) await browser.close();
-    console.error(`Puppeteer 抓取失败: ${err.message}`);
     return '';
+  } finally {
+    if (browser) await browser.close();
   }
 }
 
@@ -287,7 +363,6 @@ async function searchAllEngines(query, maxResults) {
       if (text.includes(kw.toLowerCase())) score += 1;
     }
     if (item.source === 'baidu') score += 0.5;
-    // 权威域名加分
     if (item.link) {
       for (const domain of authorityDomains) {
         if (item.link.includes(domain)) { score += 2; break; }
@@ -343,11 +418,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'tech_search',
-      description: '🔬 专用技术搜索，用于技术类问题：Linux 内核漏洞、编程框架版本、安全公告、硬件规范、开源项目文档、技术标准等。会优先抓取权威来源（如官方公告、技术博客、安全中心）的最新内容。当用户询问技术细节、漏洞修复、最新版本、编程问题、技术规范时，请优先使用此工具。',
+      description: '🔬 专用技术搜索，用于技术类问题：Linux 内核漏洞、编程框架版本、安全公告、硬件规范、开源项目文档、技术标准等。',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: '技术相关的搜索关键词，尽量精确，例如“CVE-2026-31431 修复方案”' },
+          query: { type: 'string', description: '技术相关的搜索关键词，尽量精确' },
           max_results: { type: 'number', description: '返回结果数量（1-10），默认5' },
         },
         required: ['query'],
@@ -371,7 +446,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  // 通用搜索
   if (name === 'search' || name === 'tech_search') {
     const { query, max_results = CONFIG.maxResults } = args || {};
     if (!query) throw new Error('缺少查询参数 query');
@@ -391,7 +465,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text }] };
   }
 
-  // URL 抓取
   if (name === 'fetch_url') {
     const { url, max_length = 500 } = args || {};
     if (!url) throw new Error('缺少 URL 参数');
@@ -412,3 +485,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error('✅ 多引擎搜索 MCP 服务器 v2.3.0 已启动（含 tech_search 专用工具）');
+
+// 导出供测试脚本使用
+export { searchAllEngines };
