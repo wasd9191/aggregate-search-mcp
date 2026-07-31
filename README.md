@@ -29,7 +29,7 @@ npm install
 
     注意：安装过程中会下载 Chromium（约 150MB），首次安装稍慢，但会极大提升动态页面的抓取成功率。
 
-2. 配置 LM Studio
+###2. 配置 LM Studio
 
 在 LM Studio 的 MCP 设置中编辑 mcp.json（通常位于 ~/.lmstudio/mcp.json 或设置界面内），添加：
 
@@ -46,7 +46,7 @@ npm install
 
 
 保存并重启 LM Studio 的 MCP 服务。
-3. 在对话中使用
+###3. 在对话中使用
 
 加载任意支持工具调用的模型（如 Qwen、DeepSeek 等），输入
 
@@ -167,6 +167,8 @@ fetch_url
     所有配置和代码均由 DeepSeek 协助完成，若在使用中发现缺陷，欢迎提交 Issue 或 Pull Request。
 
     如果您不信任此项目能力，可以选择不克隆使用，感谢您抽空阅读本 README。
+更新日志：
+2026/08/01经修复了已知问题
 
 最后，感谢您下载并使用本项目！ 🎉
 
