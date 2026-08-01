@@ -16,7 +16,8 @@
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
     "jsdom": "^24.0.0",
-    "puppeteer": "^22.0.0"
+    "puppeteer": "^22.0.0",
+    "p-limit": "^6.1.0"
   },
   "keywords": [
     "mcp",
